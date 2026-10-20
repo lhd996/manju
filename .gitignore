@@ -1,0 +1,20 @@
+# 依赖 / 构建产物
+node_modules/
+dist/
+
+# 运行时数据：config.json 里有 API Key，assets 里是生成的大文件
+data/
+
+# 开发期截图（README 用的是 docs/screenshots 里的几张）
+shots/
+
+# 环境变量 / 日志
+.env
+.env.*
+*.log
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
