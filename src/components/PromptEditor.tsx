@@ -40,6 +40,7 @@ export function PromptEditor({
   const [at, setAt] = useState(-1)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
+  const pendingCaret = useRef<number | null>(null)
 
   const filtered = useMemo(() => {
     const q = query.toLowerCase()
@@ -59,6 +60,16 @@ export function PromptEditor({
       mirrorRef.current.scrollTop = el.scrollTop
     }
   }, [value, rows, composing])
+
+  // 插入引用后，等新 value 提交到 DOM 再落光标
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || pendingCaret.current == null) return
+    const p = pendingCaret.current
+    pendingCaret.current = null
+    el.focus()
+    el.setSelectionRange(p, p)
+  }, [value])
 
   const detect = (el: HTMLTextAreaElement) => {
     if (composing) return
@@ -80,16 +91,19 @@ export function PromptEditor({
     const el = ref.current
     const current = el?.value ?? value
     const pos = el?.selectionStart ?? current.length
-    const before = current.slice(0, at)
+    // at 是上一次 detect 记录的 "@" 位置；保险起见夹到合法范围
+    const start = at >= 0 && at <= pos ? at : pos
+    const before = current.slice(0, start)
     const after = current.slice(pos)
     const token = `@${item.name} `
+    const caret = (before + token).length
+
+    // 光标必须等 React 把新 value 提交到 DOM 之后再设，否则会被重置到末尾
+    pendingCaret.current = caret
     onChange(before + token + after)
     setOpen(false)
-    requestAnimationFrame(() => {
-      el?.focus()
-      const next = (before + token).length
-      el?.setSelectionRange(next, next)
-    })
+    setAt(-1)
+    setQuery('')
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

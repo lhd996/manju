@@ -263,10 +263,17 @@ async function resolvePublicMedia(input) {
   if (asset.remoteUrl) return asset.remoteUrl
   const base = getConfig().publicBaseUrl
   if (base) return `${base}${asset.url}`
-  throw new ApiError(
-    400,
-    `「${asset.name}」目前只有本地地址，视频接口要求素材是公网可访问的 URL。请在「设置」里填写可公网访问的地址（如 Cloudflare Tunnel / R2），或先把它作为参考图走图片节点。`,
-  )
+
+  // 平台其实接受 data: URI（实测 1.7MB base64 也能过校验），
+  // 所以本地素材直接内联，不强制用户配公网地址。
+  const size = await assetSize(asset)
+  if (size > 8 * 1024 * 1024) {
+    throw new ApiError(
+      413,
+      `「${asset.name}」有 ${(size / 1024 / 1024).toFixed(1)}MB，超过内联上限（8MB）。请在「设置」里填一个公网可访问的地址，或换一张小一点的图。`,
+    )
+  }
+  return readAssetAsDataUrl(asset)
 }
 
 const jobs = new Map()

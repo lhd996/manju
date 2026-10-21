@@ -72,8 +72,8 @@ export function SettingsDialog() {
               spellCheck={false}
             />
             <span className="field__hint">
-              视频接口要求素材是公网可访问的 URL。若你只上传本地图片做首尾帧，需要填一个能访问到本机的隧道地址（如
-              Cloudflare Tunnel）；生成的图片自带公网 URL，不需要它。
+              一般不用填：本地素材会自动内联成 data URI 发给视频接口（单张 ≤ 8MB）。只有超过 8MB 的图片才需要这里配一个公网地址（如
+              Cloudflare Tunnel / R2）。
             </span>
           </label>
 
