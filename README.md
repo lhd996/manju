@@ -2,7 +2,7 @@
 
 一个面向 **AI 漫剧（动态漫短剧）** 的节点画布：图片节点、视频节点、3D 导演台串在一起，走通「分镜 → 首帧 → 镜头片段」的生产链路。
 
-接入 [Agnes AI](https://agnes-ai.com) 的三个模型：
+接入 [Agnes AI](https://agnes-ai.cn) 的三个模型：
 
 | 能力 | 模型 | 接口 |
 | --- | --- | --- |
@@ -184,7 +184,7 @@ docs/         设计文档与截图
 
 ## 常见问题
 
-**`fetch failed` / `连接 apihub.agnes-ai.com 失败（ECONNRESET）`**
+**`fetch failed` / `连接 api.agnes-ai.cn 失败（ECONNRESET）`**
 服务端到 Agnes 的连接层失败，通常是网络瞬断或平台拥塞，不是 Key 的问题。会自动重试并带上原因码。国内直连不稳时可以让服务端走代理：
 
 ```powershell

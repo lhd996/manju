@@ -1,7 +1,7 @@
 // Agnes AI 接入层。所有 API Key 只存在于服务端。
 import { getConfig } from './store.mjs'
 
-export const BASE = process.env.AGNES_BASE_URL || 'https://apihub.agnes-ai.com/v1'
+export const BASE = process.env.AGNES_BASE_URL || 'https://api.agnes-ai.cn/v1'
 export const ORIGIN = new URL(BASE).origin
 export const IMAGE_MODEL = 'agnes-image-2.5-flash'
 export const VIDEO_MODEL = 'agnes-video-2.5-flash'

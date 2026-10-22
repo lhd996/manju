@@ -21,7 +21,7 @@
 
 | 项目 | 值 |
 | --- | --- |
-| Base URL | `https://apihub.agnes-ai.com/v1` |
+| Base URL | `https://api.agnes-ai.cn/v1` |
 | 鉴权 | `Authorization: Bearer YOUR_API_KEY`（Messages API 用 `x-api-key` + `anthropic-version`） |
 | 密钥位置 | **只能放服务端**。文档明确要求不要写进前端代码、日志、公开仓库 |
 | 免费额度 | 免费用户 **RPM 20**（这一条会决定整个排队设计） |
