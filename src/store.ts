@@ -70,6 +70,8 @@ interface State {
   uploadAudio: (nodeId: string, file: File) => Promise<void>
 
   runNode: (id: string) => Promise<void>
+  /** 视频任务继续查询（复用平台单号，不重新下单） */
+  resumeJob: (id: string) => Promise<void>
   applyOutput: (id: string, asset: Asset | undefined, patch?: Record<string, unknown>) => void
   clearOutput: (id: string) => void
   restoreVersion: (id: string, assetId: string) => void
@@ -748,6 +750,27 @@ export const useStore = create<State>()((set, get) => ({
     scheduleSave()
   },
 
+  resumeJob: async (id) => {
+    const s = get()
+    const node = s.nodes.find((n) => n.id === id)
+    if (!node) return
+    const d = dataOf(node)
+    if (d.kind !== 'video' || !d.jobId) {
+      s.toast('这个节点没有可续查的任务', 'error')
+      return
+    }
+    s.updateNodeData(id, { status: 'running', error: undefined, note: '继续查询中…' })
+    try {
+      await api.resumeJob(d.jobId)
+      startPoll(id, d.jobId)
+      s.toast('继续查询中，任务还在平台上跑', 'success')
+    } catch (e) {
+      s.updateNodeData(id, { status: 'pending', note: errText(e) })
+      s.toast(errText(e), 'error')
+    }
+    scheduleSave()
+  },
+
   toast: (text, kind = 'info') => {
     const id = uid('t')
     set((s) => ({ toasts: [...s.toasts, { id, text, kind }] }))
@@ -815,6 +838,14 @@ function startPoll(nodeId: string, jobId: string) {
         stopPoll(nodeId)
         s.updateNodeData(nodeId, { status: 'error', error: job.error || '视频生成失败', note: undefined })
         s.toast(job.error || '视频生成失败', 'error')
+      } else if (job.status === 'pending') {
+        // 平台还在跑，服务端已停止自动轮询：保留 jobId，等用户点「继续查询」
+        stopPoll(nodeId)
+        s.updateNodeData(nodeId, {
+          status: 'pending',
+          error: undefined,
+          note: job.note || '平台仍在生成，点「继续查询」接着等',
+        })
       }
     } catch (e) {
       const fails = (pollFailures.get(nodeId) ?? 0) + 1

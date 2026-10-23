@@ -301,6 +301,31 @@ export function Inspector() {
           <div className="insp__error">
             <strong>生成失败</strong>
             <span>{data.error}</span>
+            {data.kind === 'video' && (data as VideoNodeData).jobId && (
+              <button
+                type="button"
+                className="mini"
+                onClick={() => useStore.getState().resumeJob(selectedId)}
+                title="复用平台单号继续查，不会重新下单"
+              >
+                继续查询
+              </button>
+            )}
+          </div>
+        )}
+
+        {data.kind === 'video' && data.status === 'pending' && (
+          <div className="insp__pending">
+            <strong>平台还在生成</strong>
+            <span>{(data as VideoNodeData).note || '任务没有丢，可以继续查询'}</span>
+            <button
+              type="button"
+              className="mini"
+              onClick={() => useStore.getState().resumeJob(selectedId)}
+              title="复用平台单号继续查，不会重新下单"
+            >
+              继续查询
+            </button>
           </div>
         )}
 

@@ -276,7 +276,41 @@ async function resolvePublicMedia(input) {
   return readAssetAsDataUrl(asset)
 }
 
+// ------------------------------------------------------------------ 视频任务
+// 任务记录落盘：关掉服务、重启、换机器都不至于把平台单号（providerId）弄丢。
+const JOBS_PATH = path.join(DATA_DIR, 'jobs.json')
 const jobs = new Map()
+let jobsReady = false
+let persistTimer = null
+
+function schedulePersist() {
+  if (!jobsReady || persistTimer) return
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    const list = [...jobs.values()]
+    fsp
+      .writeFile(JOBS_PATH, JSON.stringify(list, null, 2))
+      .catch((e) => console.warn('[jobs] 保存失败', e.message))
+  }, 400)
+}
+
+async function loadJobs() {
+  try {
+    const raw = JSON.parse(await fsp.readFile(JOBS_PATH, 'utf8'))
+    if (Array.isArray(raw)) {
+      for (const j of raw) {
+        if (!j?.id) continue
+        delete j.polling
+        jobs.set(j.id, j)
+      }
+    }
+    if (jobs.size) console.log(`[jobs] 恢复 ${jobs.size} 条任务记录`)
+  } catch {
+    /* 首次运行没有这个文件 */
+  }
+  jobsReady = true
+}
+
 function newJob(partial) {
   const job = {
     id: `job_${nanoid(8)}`,
@@ -287,14 +321,136 @@ function newJob(partial) {
     ...partial,
   }
   jobs.set(job.id, job)
+  schedulePersist()
   return job
 }
+
+/** 15 分钟太短了：720P 在国内版经常要 10 分钟以上，超时就判死会白丢片子 */
+const VIDEO_DEADLINE_MIN = () => Math.max(5, Number(process.env.VIDEO_DEADLINE_MIN || 45) || 45)
+/** 单次查询连续出错的容忍次数（网络抖动、平台 5xx 不该直接判失败） */
+const POLL_MAX_ERRORS = 6
+
+function metaOf(job) {
+  return {
+    kind: 'video',
+    name: nextAssetName('video'),
+    width: job.width,
+    height: job.height,
+    duration: job.seconds,
+    prompt: job.prompt,
+    params: { mode: job.mode, ratio: job.ratio, seconds: job.seconds },
+  }
+}
+
+/**
+ * 轮询一个已下单的任务。可以重复调用（resume / 重启后恢复）。
+ * 到截止时间不判失败，而是转成 pending：单号还在，随时能接着查。
+ */
+async function pollJob(job) {
+  if (!job || job.polling || !job.providerId) return
+  job.polling = true
+  job.status = 'running'
+  job.note = undefined
+  schedulePersist()
+
+  const deadline = Date.now() + VIDEO_DEADLINE_MIN() * 60_000
+  let delay = 6000
+  let errors = 0
+
+  try {
+    while (Date.now() < deadline) {
+      await sleep(delay)
+      if (!jobs.has(job.id)) return
+
+      let r
+      try {
+        r = await pollGate(() => pollVideo(job.providerId))
+        job.note = undefined
+        errors = 0
+      } catch (err) {
+        const msg = String(err?.message || '')
+        const throttled = err?.status === 429 || /too many|rate limit|frequen/i.test(msg)
+        if (throttled) {
+          delay = Math.min(Math.round(delay * 2), 30000)
+          job.note = `平台限制了查询频率，${Math.round(delay / 1000)}s 后再查（任务仍在跑，不影响出片）`
+          schedulePersist()
+          continue
+        }
+        errors += 1
+        if (errors >= POLL_MAX_ERRORS) throw err
+        delay = Math.min(Math.round(delay * 1.5), 30000)
+        job.note = `查询出错 ${errors}/${POLL_MAX_ERRORS}，${Math.round(delay / 1000)}s 后重试`
+        console.warn(`[video poll] ${job.id} error ${errors}: ${msg.slice(0, 80)}`)
+        schedulePersist()
+        continue
+      }
+
+      if (typeof r.progress === 'number') job.progress = r.progress
+      if (r.status === 'completed') {
+        if (!r.url) throw new ApiError(502, '任务完成但没有返回视频地址')
+        const asset = await createAssetFromUrl(r.url, metaOf(job))
+        job.status = 'succeeded'
+        job.progress = 100
+        job.assetId = asset.id
+        job.note = undefined
+        job.finishedAt = Date.now()
+        schedulePersist()
+        return
+      }
+      if (r.status === 'failed') throw new ApiError(502, r.error?.message || '视频生成失败')
+      delay = Math.min(Math.round(delay * 1.5), 20000)
+      schedulePersist()
+    }
+
+    job.status = 'pending'
+    job.note = `平台超过 ${VIDEO_DEADLINE_MIN()} 分钟仍在生成，任务还在平台上跑；点「继续查询」接着等，不会丢`
+    schedulePersist()
+    console.log(`[video job] ${job.id} pending (${job.providerId})`)
+  } catch (err) {
+    job.status = 'failed'
+    job.error = err?.message || '视频生成失败'
+    job.note = undefined
+    job.finishedAt = Date.now()
+    schedulePersist()
+    console.error('[video job]', job.id, job.error)
+  } finally {
+    job.polling = false
+  }
+}
+
 setInterval(() => {
   const now = Date.now()
   for (const [id, job] of jobs) {
-    if (now - job.createdAt > 60 * 60_000) jobs.delete(id)
+    if (job.polling) continue
+    const age = now - (job.createdAt || 0)
+    const ttl =
+      job.status === 'succeeded' || job.status === 'failed'
+        ? 24 * 3600_000
+        : 7 * 24 * 3600_000 // pending / 未完成：留久一点
+    if (age > ttl) jobs.delete(id)
   }
+  schedulePersist()
 }, 10 * 60_000).unref?.()
+
+await loadJobs()
+
+// 重启后自动接着查没跑完的任务（错开 1.5s，避免同时打平台）
+setTimeout(() => {
+  let n = 0
+  for (const job of jobs.values()) {
+    if (!job.providerId || job.polling) continue
+    if (!['running', 'pending', 'queued'].includes(job.status)) continue
+    if (Date.now() - (job.createdAt || 0) > 24 * 3600_000) {
+      job.status = 'failed'
+      job.error = '任务超过 24 小时仍未完成，已停止自动续查'
+      continue
+    }
+    n += 1
+    setTimeout(() => pollJob(job), n * 1500)
+  }
+  if (n) console.log(`[jobs] 自动续查 ${n} 个未完成任务`)
+  schedulePersist()
+}, 2500).unref?.()
 
 app.post('/api/generate/video', async (req, res) => {
   try {
@@ -329,7 +485,7 @@ app.post('/api/generate/video', async (req, res) => {
     const [w, h] = ratio === '9:16' ? [720, 1280] : ratio === '16:9' ? [1280, 720] : [720, 720]
 
     if (!cfg.apiKey) {
-      const job = newJob({ status: 'running', mock: true, mode, seconds: sec, ratio })
+      const job = newJob({ status: 'running', mock: true, mode, seconds: sec, ratio, prompt: text, width: w, height: h })
       let progress = 0
       const timer = setInterval(async () => {
         progress = Math.min(100, progress + 6 + Math.random() * 12)
@@ -351,6 +507,8 @@ app.post('/api/generate/video', async (req, res) => {
           job.status = 'succeeded'
           job.progress = 100
           job.assetId = asset.id
+          job.finishedAt = Date.now()
+          schedulePersist()
         }
       }, 550)
       return res.json({ jobId: job.id, mock: true })
@@ -368,57 +526,27 @@ app.post('/api/generate/video', async (req, res) => {
       for (const a of audios) payload.audios.push(await resolvePublicMedia(a))
     }
 
-    const job = newJob({ status: 'queued', mode, seconds: sec, ratio })
+    const job = newJob({
+      status: 'queued',
+      mode,
+      seconds: sec,
+      ratio,
+      prompt: text,
+      width: w,
+      height: h,
+    })
 
     ;(async () => {
       try {
         const { videoId } = await createVideoOnce(payload)
         job.providerId = videoId
-        job.status = 'running'
-        const deadline = Date.now() + 15 * 60_000
-        // 平台对状态查询有频率限制（实测 1.4 秒一次十几秒就会被拦），起手 6 秒、逐步退到 20 秒
-        let delay = 6000
-        while (Date.now() < deadline) {
-          await sleep(delay)
-          let r
-          try {
-            r = await pollGate(() => pollVideo(videoId))
-            job.note = undefined
-          } catch (err) {
-            const msg = String(err?.message || '')
-            const throttled = err?.status === 429 || /too many|rate limit|frequen/i.test(msg)
-            if (!throttled) throw err
-            delay = Math.min(Math.round(delay * 2), 30000)
-            job.note = `平台限制了查询频率，${Math.round(delay / 1000)}s 后再查（任务仍在跑，不影响出片）`
-            console.warn(`[video poll] ${job.id} throttled, wait ${delay}ms`)
-            continue
-          }
-
-          if (typeof r.progress === 'number') job.progress = r.progress
-          if (r.status === 'completed') {
-            if (!r.url) throw new ApiError(502, '任务完成但没有返回视频地址')
-            const asset = await createAssetFromUrl(r.url, {
-              kind: 'video',
-              name: nextAssetName('video'),
-              width: w,
-              height: h,
-              duration: sec,
-              prompt: text,
-              params: { mode, ratio, seconds: sec },
-            })
-            job.note = undefined
-            job.status = 'succeeded'
-            job.progress = 100
-            job.assetId = asset.id
-            return
-          }
-          if (r.status === 'failed') throw new ApiError(502, r.error?.message || '视频生成失败')
-          delay = Math.min(Math.round(delay * 1.5), 20000)
-        }
-        throw new ApiError(504, '视频生成超时（15 分钟）')
+        schedulePersist()
+        await pollJob(job)
       } catch (err) {
         job.status = 'failed'
         job.error = err?.message || '视频生成失败'
+        job.finishedAt = Date.now()
+        schedulePersist()
         console.error('[video job]', job.id, job.error)
       }
     })()
@@ -429,11 +557,33 @@ app.post('/api/generate/video', async (req, res) => {
   }
 })
 
+function viewJob(job) {
+  const { polling, ...rest } = job
+  return rest
+}
+
 app.get('/api/jobs/:id', (req, res) => {
   const job = jobs.get(req.params.id)
   if (!job) return res.status(404).json({ error: '任务不存在或已过期' })
   const asset = job.assetId ? getAsset(job.assetId) : null
-  res.json({ ...job, asset })
+  res.json({ ...viewJob(job), asset })
+})
+
+/** 继续查询：复用原来的 providerId，不重新下单、不重复扣额度 */
+app.post('/api/jobs/:id/resume', (req, res) => {
+  const job = jobs.get(req.params.id)
+  if (!job) return res.status(404).json({ error: '任务不存在或已过期' })
+  if (job.status === 'succeeded') {
+    const asset = job.assetId ? getAsset(job.assetId) : null
+    return res.json({ ...viewJob(job), asset })
+  }
+  if (!job.providerId) {
+    return res.status(400).json({ error: '这个任务还没有拿到平台单号（下单阶段就中断了），需要重新生成' })
+  }
+  if (!job.polling) {
+    pollJob(job).catch((e) => console.warn('[video job] resume failed', e?.message))
+  }
+  res.json({ ...viewJob(job), resumed: true })
 })
 
 // ------------------------------------------------------------------ 提示词优化

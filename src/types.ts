@@ -61,7 +61,7 @@ export interface VideoNodeData {
   audios: MediaInput[]
   output?: Asset
   versions?: Asset[]
-  status: 'idle' | 'running' | 'error'
+  status: 'idle' | 'running' | 'error' | 'pending'
   progress?: number
   /** 运行中的附加说明，例如"平台队列已满，20s 后自动重试" */
   note?: string

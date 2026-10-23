@@ -36,7 +36,7 @@ const json = (body: unknown): RequestInit => ({
 
 export interface JobView {
   id: string
-  status: 'queued' | 'running' | 'succeeded' | 'failed'
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'pending'
   progress: number
   error?: string
   note?: string
@@ -90,4 +90,7 @@ export const api = {
   }) => jsonFetch<{ jobId: string; mock?: boolean }>('/api/generate/video', json(body)),
 
   getJob: (id: string) => jsonFetch<JobView>(`/api/jobs/${id}`),
+
+  /** 继续查询：复用平台单号，不重新下单 */
+  resumeJob: (id: string) => jsonFetch<JobView & { resumed?: boolean }>(`/api/jobs/${id}/resume`, { method: 'POST' }),
 }
